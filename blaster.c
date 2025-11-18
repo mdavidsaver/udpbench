@@ -19,19 +19,17 @@ int captured_err = errno; \
     exit(1); \
 } while(0)
 
-#define STOPu8 1024*1024*1024
-
-// excluding IP+UDP headers
-#define MTU 1450
-
-// round up to x4
-#define NUMu8 (((MTU-1)|0x3)+1)
-#define NUMu32 (NUMu8/4u)
-
 static
 void usage(const char* argv0)
 {
-    fprintf(stderr, "%s [-m <MTU>] [-b <BATCHSIZE>] [-t <totalMB>] <IP[:port#]>\n", argv0);
+    fprintf(stderr, "%s [-S] [-m <MTU>] [-b <BATCHSIZE>] [-t <totalMB>] <IP[:port#]>\n"
+            "\n"
+            "  -S  - use UDP_SEGMENT\n"
+            "  -m <MTU> - set UDP payload size.  Default 1450\n"
+            "  -b <BATCHSIZE> - Number of packets to push to kernel at once.  Default 1\n"
+            "  -t <totalMB> - Total size to send, in MB.  Default 16MB\n"
+            "  <IP[:port#[> - Destination endpoint address\n",
+            argv0);
 }
 
 int main(int argc, char *argv[])
@@ -39,10 +37,11 @@ int main(int argc, char *argv[])
     unsigned mtu = 1450;
     size_t nbatch = 1u;
     size_t nbytes = 1024*1024*16;
+    unsigned char use_segment = 0;
     {
         int ret = 0;
         int opt;
-        while( (opt=getopt(argc, argv, "hm:b:t:"))!= -1) {
+        while( (opt=getopt(argc, argv, "hm:b:t:S"))!= -1) {
             switch(opt) {
             case 'm': {
                 int val = atoi(optarg);
@@ -65,6 +64,9 @@ int main(int argc, char *argv[])
                 nbytes = 1024*1024*(size_t)val;
             }
                 break;
+            case 'S':
+                use_segment = 1;
+                break;
             default:
                 fprintf(stderr, "Unexpected argument: -%c", opt);
                 ret = 1;
@@ -74,6 +76,12 @@ int main(int argc, char *argv[])
                 return ret;
             }
         }
+    }
+
+    if(use_segment && nbatch>64) {
+        usage(argv[0]);
+        fprintf(stderr, "-S # must be less than 65\n");
+        return 1;
     }
 
     if(optind+1!=argc) {
@@ -88,10 +96,11 @@ int main(int argc, char *argv[])
     mtu++;
 
     fprintf(stderr,
+            "UDP_SEGMENT: %c\n"
             "MTU: %u\n"
             "#batch: %zu\n"
             "#nbytes: %zu\n",
-            mtu, nbatch, nbytes);
+            use_segment ? 'Y': 'N', mtu, nbatch, nbytes);
 
     struct sockaddr_in target;
     memset(&target, 0, sizeof(target));
@@ -129,6 +138,13 @@ int main(int argc, char *argv[])
     if(!buffer || !mhdrs || !iovecs)
         OOPS("malloc");
 
+    unsigned orig_mtu = mtu;
+    if(use_segment) {
+        // UDP_SEGMENT delegates packet segmentation towards hardware (OS or maybe HW)
+        mtu *= nbatch;
+        nbatch = 1;
+    }
+
     // prepare buffers
     for(size_t n=0; n<nbatch; n++) {
         iovecs[n].iov_len = mtu;
@@ -165,6 +181,12 @@ int main(int argc, char *argv[])
             OOPS("get SO_SNDBUF 2");
 
         fprintf(stderr, "SO_SNDBUF: %d\n", buflen);
+    }
+
+    if(use_segment) {
+        int val = orig_mtu;
+        if(setsockopt(sock, SOL_UDP, UDP_SEGMENT, &val, sizeof(val)))
+            OOPS("UDP_SEGMENT");
     }
 
     {
