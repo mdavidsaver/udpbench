@@ -6,6 +6,7 @@
 #include <memory.h>
 #include <string.h>
 #include <errno.h>
+#include <time.h>
 
 #include <unistd.h>
 #include <netinet/ip.h>
@@ -198,6 +199,10 @@ int main(int argc, char *argv[])
             OOPS("bind()");
     }
 
+    struct timespec tstart, tend;
+
+    (void)clock_gettime(CLOCK_MONOTONIC, &tstart);
+
     while(counter<stop) {
 
         for(size_t i=0, N=mtu*nbatch/4u; i<N; i++) {
@@ -207,6 +212,22 @@ int main(int argc, char *argv[])
         if(sendmmsg(sock, mhdrs, nbatch, 0)!=nbatch)
             OOPS("sendmmsg");
     }
+
+    (void)clock_gettime(CLOCK_MONOTONIC, &tend);
+
+    double t0 = tstart.tv_sec + tstart.tv_nsec*1e-9;
+    double t1 = tend.tv_sec + tend.tv_nsec*1e-9;
+    double tD = t1-t0;
+
+    double rate = nbytes / tD; // bytes / sec
+
+    printf("\n"
+           "sent %zu bytes in %zu pkts\n"
+           "in %.3f sec (time to queue, not to send!)\n"
+           "  %.3f Mb/s\n",
+           nbytes, nbytes/orig_mtu,
+           tD,
+           rate / 1048576.0 * 8.0);
 
     return 0;
 }
